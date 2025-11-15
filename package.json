@@ -1,0 +1,30 @@
+{
+  "name": "code-review-assistant",
+  "version": "0.1.0",
+  "description": "A GitHub Action that greets from Code Review Assistant.",
+  "main": "dist/index.js",
+  "scripts": {
+    "build": "tsc --project tsconfig.json"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/example/code-review-assistant.git"
+  },
+  "keywords": [
+    "github-actions",
+    "typescript",
+    "code-review-assistant"
+  ],
+  "author": "",
+  "license": "MIT",
+  "bugs": {
+    "url": "https://github.com/example/code-review-assistant/issues"
+  },
+  "homepage": "https://github.com/example/code-review-assistant#readme",
+  "type": "commonjs",
+  "dependencies": {},
+  "devDependencies": {
+    "typescript": "^5.5.0",
+    "@types/node": "^20.11.0"
+  }
+}

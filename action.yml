@@ -1,0 +1,10 @@
+name: "Code Review Assistant"
+description: "A simple TypeScript GitHub Action that prints a greeting."
+author: "Code Review Assistant"
+inputs: {}
+runs:
+  using: "node20"
+  main: "dist/index.js"
+branding:
+  icon: "message-square"
+  color: "blue"
