@@ -27,16 +27,14 @@ async function run(): Promise<void> {
 
     const octokit = github.getOctokit(token);
 
-    const filenames = await github.paginate(
-      (parameters) => octokit.rest.pulls.listFiles(parameters),
-      {
+    const filenames = (
+      await octokit.paginate(octokit.rest.pulls.listFiles, {
         owner,
         repo,
         pull_number: pullRequestNumber,
         per_page: 100
-      },
-      (response) => response.data.map((file) => file.filename)
-    );
+      })
+    ).map((file) => file.filename);
 
     if (filenames.length === 0) {
       core.info('No changed files found for this pull request.');
