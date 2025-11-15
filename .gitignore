@@ -2,5 +2,7 @@ node_modules/*
 !node_modules/@actions/
 !node_modules/@actions/core/
 !node_modules/@actions/core/**
+!node_modules/@actions/github/
+!node_modules/@actions/github/**
 *.tsbuildinfo
 .DS_Store
