@@ -1,0 +1,6 @@
+node_modules/*
+!node_modules/@actions/
+!node_modules/@actions/core/
+!node_modules/@actions/core/**
+*.tsbuildinfo
+.DS_Store
