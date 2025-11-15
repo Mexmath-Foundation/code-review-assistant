@@ -1,7 +1,10 @@
 name: "Code Review Assistant"
-description: "A simple TypeScript GitHub Action that prints a greeting."
+description: "Lists the changed files for the current pull request."
 author: "Code Review Assistant"
-inputs: {}
+inputs:
+  github-token:
+    description: "GitHub token with access to the pull request."
+    required: false
 runs:
   using: "node20"
   main: "dist/index.js"

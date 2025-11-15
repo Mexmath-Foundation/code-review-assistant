@@ -1,15 +1,19 @@
 # Code Review Assistant GitHub Action
 
-This repository contains a simple GitHub Action implemented in TypeScript. The action prints a greeting to the workflow logs when it runs.
+This repository contains a TypeScript GitHub Action that enumerates the files changed in the pull request that triggered the workflow.
 
 ## Usage
 
 Add the following step to your workflow to invoke the action:
 
 ```yaml
-- name: Greet from Code Review Assistant
+- name: List changed files with Code Review Assistant
   uses: ./. # Replace with the repository path once published
+  with:
+    github-token: ${{ secrets.GITHUB_TOKEN }}
 ```
+
+The provided token must have permission to read pull request metadata. When executed on a pull request event the action prints each filename to the job logs.
 
 ## Releasing
 
@@ -23,7 +27,7 @@ Add the following step to your workflow to invoke the action:
 To run the action whenever a pull request is opened, updated, or reopened, add a workflow such as:
 
 ```yaml
-name: Code Review Assistant greeting
+name: Code Review Assistant changed files
 
 on:
   pull_request:
@@ -33,8 +37,10 @@ jobs:
   greet:
     runs-on: ubuntu-latest
     steps:
-      - name: Run Code Review Assistant action
+      - name: List pull request changes
         uses: <owner>/<repo>@v1
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
 ```
 
 ## Development
