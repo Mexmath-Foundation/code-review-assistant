@@ -27,7 +27,6 @@ export interface FileCommentThread {
 export interface Comment {
   content: string;
   author: string;
-  parentCommentId?: string;
 }
 
 export interface CourseInfo {

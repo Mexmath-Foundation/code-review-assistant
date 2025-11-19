@@ -323,8 +323,7 @@ function buildCommentThreads(comments: PullRequestReviewComment[]): FileCommentT
 
     thread.comments.push({
       content: comment.body ?? '',
-      author: comment.user?.login ?? 'unknown',
-      parentCommentId: comment.in_reply_to_id ? String(comment.in_reply_to_id) : undefined
+      author: comment.user?.login ?? 'unknown'
     });
   }
 
