@@ -93,7 +93,7 @@ async function fetchPullRequestDetails(token, owner, repo, pullNumber) {
         headSha
     };
 }
-async function buildAffectedFilesModel(token, repository, pullRequest, files) {
+async function buildAffectedFilesModel(token, repository, pullRequest, files, fileComments) {
     const affectedFiles = [];
     for (const file of files) {
         let content = '';
@@ -110,7 +110,8 @@ async function buildAffectedFilesModel(token, repository, pullRequest, files) {
             name: extractFileName(file.filename),
             path: file.filename,
             content,
-            diff: file.patch ?? ''
+            diff: file.patch ?? '',
+            commentThreads: fileComments[file.filename] ?? []
         });
     }
     return affectedFiles;
@@ -144,6 +145,80 @@ function encodeRepositoryPath(path) {
         .split('/')
         .map((segment) => encodeURIComponent(segment))
         .join('/');
+}
+async function fetchCommentsForFiles(token, repository, pullRequest) {
+    const comments = await paginatePullRequestComments(token, repository, pullRequest);
+    const groupedByPath = new Map();
+    for (const comment of comments) {
+        if (!comment.path) {
+            continue;
+        }
+        const list = groupedByPath.get(comment.path) ?? [];
+        list.push(comment);
+        groupedByPath.set(comment.path, list);
+    }
+    const result = {};
+    for (const [path, pathComments] of groupedByPath.entries()) {
+        result[path] = buildCommentThreads(pathComments);
+    }
+    return result;
+}
+async function paginatePullRequestComments(token, repository, pullRequest) {
+    const perPage = 100;
+    const comments = [];
+    let page = 1;
+    while (true) {
+        const pageData = await requestGithubJson(token, `/repos/${repository.owner}/${repository.name}/pulls/${pullRequest.number}/comments`, { per_page: perPage.toString(), page: page.toString() });
+        if (!Array.isArray(pageData)) {
+            break;
+        }
+        comments.push(...pageData);
+        if (pageData.length < perPage) {
+            break;
+        }
+        page += 1;
+    }
+    return comments;
+}
+function buildCommentThreads(comments) {
+    const threads = new Map();
+    const sorted = [...comments].sort((a, b) => {
+        const aTime = a.created_at ? Date.parse(a.created_at) : 0;
+        const bTime = b.created_at ? Date.parse(b.created_at) : 0;
+        if (aTime === bTime) {
+            return a.id - b.id;
+        }
+        return aTime - bTime;
+    });
+    for (const comment of sorted) {
+        if (!comment.path) {
+            continue;
+        }
+        const rootId = comment.in_reply_to_id ?? comment.id;
+        let thread = threads.get(rootId);
+        if (!thread) {
+            thread = {
+                lineNumber: comment.line ?? comment.original_line ?? 0,
+                comments: []
+            };
+            threads.set(rootId, thread);
+        }
+        thread.comments.push({
+            content: comment.body ?? '',
+            author: comment.user?.login ?? 'unknown',
+            parentCommentId: comment.in_reply_to_id ? String(comment.in_reply_to_id) : undefined
+        });
+    }
+    return Array.from(threads.values());
+}
+function fetchCourseInfo() {
+    const id = process.env.COURSE_ID;
+    const name = process.env.COURSE_NAME;
+    if (!id || !name) {
+        core.info('Course information environment variables were not fully provided.');
+        return null;
+    }
+    return { id, name };
 }
 async function requestGithubJson(token, path, query) {
     const url = buildGithubUrl(path, query);
@@ -185,9 +260,16 @@ async function run() {
             core.info('No changed files found for this pull request.');
             return;
         }
-        const affectedFiles = await buildAffectedFilesModel(context.token, context.repository, context.pullRequest, files);
+        const fileComments = await fetchCommentsForFiles(context.token, context.repository, context.pullRequest);
+        const affectedFiles = await buildAffectedFilesModel(context.token, context.repository, context.pullRequest, files, fileComments);
+        const courseInfo = fetchCourseInfo();
+        if (!courseInfo) {
+            core.setFailed('Course information is required but could not be determined from the environment.');
+            return;
+        }
         const result = {
             repository: context.repository,
+            course: courseInfo,
             pullRequests: [
                 {
                     name: context.pullRequest.name,

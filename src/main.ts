@@ -1,5 +1,13 @@
 import * as core from '@actions/core';
 import * as github from '@actions/github';
+import type {
+  CourseInfo,
+  FileChange,
+  FileCommentThread,
+  PullRequestInfo,
+  RepositoryInfo,
+  ReviewResult
+} from './model';
 
 type OctokitClient = ReturnType<typeof github.getOctokit>;
 
@@ -11,37 +19,11 @@ type PullRequestFile = {
 
 const GITHUB_API_URL = process.env.GITHUB_API_URL || 'https://api.github.com';
 
-interface RepositoryInfo {
-  name: string;
-  owner: string;
-  url: string;
-}
-
-interface PullRequestModel {
-  name: string;
-  number: number;
-  url: string;
-}
-
-interface PullRequestMetadata extends PullRequestModel {
+type PullRequestMetadata = Omit<PullRequestInfo, 'files'> & {
   headSha: string;
-}
+};
 
-interface FileModel {
-  name: string;
-  path: string;
-  content: string;
-  diff: string;
-}
-
-interface PullRequestResultEntry extends PullRequestModel {
-  files: FileModel[];
-}
-
-interface ActionResultModel {
-  repository: RepositoryInfo;
-  pullRequests: PullRequestResultEntry[];
-}
+type FileCommentsMap = Record<string, FileCommentThread[]>;
 
 interface PullRequestContext {
   repository: RepositoryInfo;
@@ -68,6 +50,19 @@ interface PullRequestDetails {
   title?: string;
   html_url: string;
   headSha: string;
+}
+
+interface PullRequestReviewComment {
+  id: number;
+  in_reply_to_id?: number;
+  path?: string;
+  body?: string;
+  user?: {
+    login?: string;
+  };
+  line?: number | null;
+  original_line?: number | null;
+  created_at?: string;
 }
 
 async function resolvePullRequestContext(): Promise<PullRequestContext | null> {
@@ -162,9 +157,10 @@ async function buildAffectedFilesModel(
   token: string,
   repository: RepositoryInfo,
   pullRequest: PullRequestMetadata,
-  files: PullRequestFile[]
-): Promise<FileModel[]> {
-  const affectedFiles: FileModel[] = [];
+  files: PullRequestFile[],
+  fileComments: FileCommentsMap
+): Promise<FileChange[]> {
+  const affectedFiles: FileChange[] = [];
 
   for (const file of files) {
     let content = '';
@@ -182,7 +178,8 @@ async function buildAffectedFilesModel(
       name: extractFileName(file.filename),
       path: file.filename,
       content,
-      diff: file.patch ?? ''
+      diff: file.patch ?? '',
+      commentThreads: fileComments[file.filename] ?? []
     });
   }
 
@@ -235,6 +232,115 @@ function encodeRepositoryPath(path: string): string {
     .split('/')
     .map((segment) => encodeURIComponent(segment))
     .join('/');
+}
+
+async function fetchCommentsForFiles(
+  token: string,
+  repository: RepositoryInfo,
+  pullRequest: PullRequestMetadata
+): Promise<FileCommentsMap> {
+  const comments = await paginatePullRequestComments(token, repository, pullRequest);
+  const groupedByPath = new Map<string, PullRequestReviewComment[]>();
+
+  for (const comment of comments) {
+    if (!comment.path) {
+      continue;
+    }
+
+    const list = groupedByPath.get(comment.path) ?? [];
+    list.push(comment);
+    groupedByPath.set(comment.path, list);
+  }
+
+  const result: FileCommentsMap = {};
+  for (const [path, pathComments] of groupedByPath.entries()) {
+    result[path] = buildCommentThreads(pathComments);
+  }
+
+  return result;
+}
+
+async function paginatePullRequestComments(
+  token: string,
+  repository: RepositoryInfo,
+  pullRequest: PullRequestMetadata
+): Promise<PullRequestReviewComment[]> {
+  const perPage = 100;
+  const comments: PullRequestReviewComment[] = [];
+  let page = 1;
+
+  while (true) {
+    const pageData = await requestGithubJson<PullRequestReviewComment[]>(
+      token,
+      `/repos/${repository.owner}/${repository.name}/pulls/${pullRequest.number}/comments`,
+      { per_page: perPage.toString(), page: page.toString() }
+    );
+
+    if (!Array.isArray(pageData)) {
+      break;
+    }
+
+    comments.push(...pageData);
+
+    if (pageData.length < perPage) {
+      break;
+    }
+
+    page += 1;
+  }
+
+  return comments;
+}
+
+function buildCommentThreads(comments: PullRequestReviewComment[]): FileCommentThread[] {
+  const threads = new Map<number, FileCommentThread>();
+  const sorted = [...comments].sort((a, b) => {
+    const aTime = a.created_at ? Date.parse(a.created_at) : 0;
+    const bTime = b.created_at ? Date.parse(b.created_at) : 0;
+
+    if (aTime === bTime) {
+      return a.id - b.id;
+    }
+
+    return aTime - bTime;
+  });
+
+  for (const comment of sorted) {
+    if (!comment.path) {
+      continue;
+    }
+
+    const rootId = comment.in_reply_to_id ?? comment.id;
+    let thread = threads.get(rootId);
+
+    if (!thread) {
+      thread = {
+        lineNumber: comment.line ?? comment.original_line ?? 0,
+        comments: []
+      };
+      threads.set(rootId, thread);
+    }
+
+    thread.comments.push({
+      content: comment.body ?? '',
+      author: comment.user?.login ?? 'unknown',
+      parentCommentId: comment.in_reply_to_id ? String(comment.in_reply_to_id) : undefined
+    });
+  }
+
+  return Array.from(threads.values());
+}
+
+function fetchCourseInfo(): CourseInfo | null {
+  const id = process.env.COURSE_ID;
+  const name = process.env.COURSE_NAME;
+
+  if (!id || !name) {
+    core.info('Course information environment variables were not fully provided.');
+    return null;
+  }
+
+  return { id, name };
 }
 
 async function requestGithubJson<T>(
@@ -293,15 +399,26 @@ async function run(): Promise<void> {
       return;
     }
 
+    const fileComments = await fetchCommentsForFiles(context.token, context.repository, context.pullRequest);
+
     const affectedFiles = await buildAffectedFilesModel(
       context.token,
       context.repository,
       context.pullRequest,
-      files
+      files,
+      fileComments
     );
 
-    const result: ActionResultModel = {
+    const courseInfo = fetchCourseInfo();
+
+    if (!courseInfo) {
+      core.setFailed('Course information is required but could not be determined from the environment.');
+      return;
+    }
+
+    const result: ReviewResult = {
       repository: context.repository,
+      course: courseInfo,
       pullRequests: [
         {
           name: context.pullRequest.name,
