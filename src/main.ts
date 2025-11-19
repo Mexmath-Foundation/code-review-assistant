@@ -1,19 +1,15 @@
 import * as core from '@actions/core';
 import * as github from '@actions/github';
 
-type BaseOctokit = ReturnType<typeof github.getOctokit>;
-type OctokitClient = BaseOctokit & {
-  rest: {
-    pulls: BaseOctokit['rest']['pulls'] & Record<string, unknown>;
-    repos: Record<string, unknown>;
-  };
-};
+type OctokitClient = ReturnType<typeof github.getOctokit>;
 
 type PullRequestFile = {
   filename: string;
   patch?: string;
   status?: string;
 };
+
+const GITHUB_API_URL = process.env.GITHUB_API_URL || 'https://api.github.com';
 
 interface RepositoryInfo {
   name: string;
@@ -50,7 +46,28 @@ interface ActionResultModel {
 interface PullRequestContext {
   repository: RepositoryInfo;
   pullRequest: PullRequestMetadata;
+  token: string;
   octokit: OctokitClient;
+}
+
+interface PullRequestApiResponse {
+  title?: string;
+  html_url: string;
+  head?: {
+    sha?: string;
+  };
+}
+
+interface RepositoryContentApiResponse {
+  content?: string;
+  encoding?: string;
+  type?: string;
+}
+
+interface PullRequestDetails {
+  title?: string;
+  html_url: string;
+  headSha: string;
 }
 
 async function resolvePullRequestContext(): Promise<PullRequestContext | null> {
@@ -76,22 +93,8 @@ async function resolvePullRequestContext(): Promise<PullRequestContext | null> {
     return null;
   }
 
-  const octokit = github.getOctokit(token) as OctokitClient;
-  const pullsApi = octokit.rest.pulls as Record<string, unknown>;
-  const pullRequestResponse = await (pullsApi.get as (
-    params: { owner: string; repo: string; pull_number: number }
-  ) => Promise<{ data: { head?: { sha?: string }; title?: string; html_url: string } }>)({
-    owner,
-    repo,
-    pull_number: pullRequestNumber
-  });
-
-  const headSha = pullRequestResponse.data.head?.sha;
-
-  if (!headSha) {
-    core.setFailed('Unable to determine the pull request head SHA.');
-    return null;
-  }
+  const octokit = github.getOctokit(token);
+  const pullRequestDetails = await fetchPullRequestDetails(token, owner, repo, pullRequestNumber);
 
   const repository: RepositoryInfo = {
     name: repo,
@@ -100,15 +103,16 @@ async function resolvePullRequestContext(): Promise<PullRequestContext | null> {
   };
 
   const pullRequest: PullRequestMetadata = {
-    name: pullRequestResponse.data.title ?? `Pull Request #${pullRequestNumber}`,
+    name: pullRequestDetails.title ?? `Pull Request #${pullRequestNumber}`,
     number: pullRequestNumber,
-    url: pullRequestResponse.data.html_url,
-    headSha
+    url: pullRequestDetails.html_url,
+    headSha: pullRequestDetails.headSha
   };
 
   return {
     repository,
     pullRequest,
+    token,
     octokit
   };
 }
@@ -130,8 +134,32 @@ async function listChangedFiles(
   );
 }
 
+async function fetchPullRequestDetails(
+  token: string,
+  owner: string,
+  repo: string,
+  pullNumber: number
+): Promise<PullRequestDetails> {
+  const data = await requestGithubJson<PullRequestApiResponse>(
+    token,
+    `/repos/${owner}/${repo}/pulls/${pullNumber}`
+  );
+
+  const headSha = data.head?.sha;
+
+  if (!headSha) {
+    throw new Error('Unable to determine the pull request head SHA.');
+  }
+
+  return {
+    title: data.title,
+    html_url: data.html_url,
+    headSha
+  };
+}
+
 async function buildAffectedFilesModel(
-  octokit: OctokitClient,
+  token: string,
   repository: RepositoryInfo,
   pullRequest: PullRequestMetadata,
   files: PullRequestFile[]
@@ -143,7 +171,7 @@ async function buildAffectedFilesModel(
 
     if (file.status !== 'removed') {
       try {
-        content = await fetchFileContent(octokit, repository, pullRequest, file.filename);
+        content = await fetchFileContent(token, repository, pullRequest, file.filename);
       } catch (error) {
         const message = error instanceof Error ? error.message : 'Unknown error';
         core.info(`Warning: Unable to retrieve content for ${file.filename}: ${message}`);
@@ -162,34 +190,31 @@ async function buildAffectedFilesModel(
 }
 
 async function fetchFileContent(
-  octokit: OctokitClient,
+  token: string,
   repository: RepositoryInfo,
   pullRequest: PullRequestMetadata,
   path: string
 ): Promise<string> {
-  const reposApi = octokit.rest.repos as {
-    getContent: (params: { owner: string; repo: string; path: string; ref: string }) => Promise<{
-      data: { content?: string; encoding?: string } | Array<unknown>;
-    }>;
-  };
+  const encodedPath = encodeRepositoryPath(path);
+  const response = await requestGithubJson<RepositoryContentApiResponse | RepositoryContentApiResponse[]>(
+    token,
+    `/repos/${repository.owner}/${repository.name}/contents/${encodedPath}`,
+    { ref: pullRequest.headSha }
+  );
 
-  const response = await reposApi.getContent({
-    owner: repository.owner,
-    repo: repository.name,
-    path,
-    ref: pullRequest.headSha
-  });
-
-  if (Array.isArray(response.data)) {
+  if (Array.isArray(response)) {
     return '';
   }
 
-  const file = response.data as { content?: string; encoding?: string };
-  if (typeof file.content !== 'string') {
+  if (response.type && response.type !== 'file') {
     return '';
   }
 
-  return decodeFileContent(file.content, file.encoding);
+  if (typeof response.content !== 'string') {
+    return '';
+  }
+
+  return decodeFileContent(response.content, response.encoding);
 }
 
 function extractFileName(filePath: string): string {
@@ -203,6 +228,54 @@ function decodeFileContent(content: string, encoding?: string): string {
   }
 
   return content;
+}
+
+function encodeRepositoryPath(path: string): string {
+  return path
+    .split('/')
+    .map((segment) => encodeURIComponent(segment))
+    .join('/');
+}
+
+async function requestGithubJson<T>(
+  token: string,
+  path: string,
+  query?: Record<string, string>
+): Promise<T> {
+  const url = buildGithubUrl(path, query);
+  const response = await fetch(url, {
+    headers: buildGithubHeaders(token)
+  });
+
+  const data = (await response.json()) as T;
+
+  if (!response.ok) {
+    const errorMessage = typeof data === 'object' && data !== null && 'message' in data ? (data as { message?: string }).message : undefined;
+    throw new Error(errorMessage || `GitHub API request failed with status ${response.status}`);
+  }
+
+  return data;
+}
+
+function buildGithubUrl(path: string, query?: Record<string, string>): string {
+  const url = new URL(path.startsWith('/') ? path : `/${path}`, GITHUB_API_URL);
+
+  if (query) {
+    for (const [key, value] of Object.entries(query)) {
+      url.searchParams.set(key, value);
+    }
+  }
+
+  return url.toString();
+}
+
+function buildGithubHeaders(token: string): Record<string, string> {
+  return {
+    Authorization: `Bearer ${token}`,
+    Accept: 'application/vnd.github+json',
+    'User-Agent': 'code-review-assistant-action',
+    'X-GitHub-Api-Version': '2022-11-28'
+  };
 }
 
 async function run(): Promise<void> {
@@ -221,7 +294,7 @@ async function run(): Promise<void> {
     }
 
     const affectedFiles = await buildAffectedFilesModel(
-      context.octokit,
+      context.token,
       context.repository,
       context.pullRequest,
       files

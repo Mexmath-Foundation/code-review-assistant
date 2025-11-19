@@ -22,6 +22,8 @@ The provided token must have permission to read pull request metadata. When exec
 3. Create a semantic version tag (for example, `v1.0.0`) and push the tag: `git tag v1.0.0 && git push origin v1.0.0`.
 4. Draft a GitHub Release for the new tag. Once published, the action becomes consumable via `uses: <owner>/<repo>@v1` (or the specific tag).
 
+`git tag -d v0.1.0 && git push origin -d v0.1.0 && git tag v0.1.0 && git push origin v0.1.0`
+
 ## Adding to a Pull Request workflow
 
 To run the action whenever a pull request is opened, updated, or reopened, add a workflow such as:
