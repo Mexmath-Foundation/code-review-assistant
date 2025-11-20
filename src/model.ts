@@ -1,9 +1,3 @@
-export interface RepositoryInfo {
-  name: string;
-  owner: string;
-  url: string;
-}
-
 export interface FileChange {
   name: string;
   path: string;
@@ -12,10 +6,11 @@ export interface FileChange {
   commentThreads: FileCommentThread[];
 }
 
-export interface PullRequestInfo {
+export interface PullRequestEntry {
   name: string;
   number: number;
   url: string;
+  commitHash: string;
   files: FileChange[];
 }
 
@@ -25,17 +20,43 @@ export interface FileCommentThread {
 }
 
 export interface Comment {
+  id: string;
   content: string;
   author: string;
+  parentId?: string;
 }
 
-export interface CourseInfo {
+export interface NewComment {
+  content: string;
+  parentId?: string;
+}
+
+export interface ReplyComment {
+  type: 'reply';
+  content: string;
+  inReplyTo: string;
+}
+
+export interface CodeComment {
+  type: 'code';
+  content: string;
+  commitHash: string;
+  path: string;
+  line: number;
+  side: 'LEFT' | 'RIGHT';
+}
+
+export type ReviewComment = ReplyComment | CodeComment;
+
+export interface Course {
   id: string;
   name: string;
+  repository: Repository;
 }
 
-export interface ReviewResult {
-  repository: RepositoryInfo;
-  pullRequests: PullRequestInfo[];
-  course: CourseInfo;
+export interface Repository {
+  name: string;
+  owner: string;
+  url: string;
+  pullRequests: PullRequestEntry[];
 }

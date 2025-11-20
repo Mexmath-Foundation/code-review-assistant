@@ -1,12 +1,12 @@
 import * as core from '@actions/core';
 import * as github from '@actions/github';
 import type {
-  CourseInfo,
+  Course,
   FileChange,
   FileCommentThread,
-  PullRequestInfo,
-  RepositoryInfo,
-  ReviewResult
+  PullRequestEntry,
+  Repository,
+  ReviewComment
 } from './model';
 
 type OctokitClient = ReturnType<typeof github.getOctokit>;
@@ -19,20 +19,23 @@ type PullRequestFile = {
 
 const GITHUB_API_URL = process.env.GITHUB_API_URL || 'https://api.github.com';
 
-type PullRequestMetadata = Omit<PullRequestInfo, 'files'> & {
+type PullRequestMetadata = Omit<PullRequestEntry, 'files'> & {
   headSha: string;
 };
+
+type RepositorySummary = Pick<Repository, 'name' | 'owner' | 'url'>;
+type CourseMetadata = Omit<Course, 'repository'>;
 
 type FileCommentsMap = Record<string, FileCommentThread[]>;
 
 interface PullRequestContext {
-  repository: RepositoryInfo;
+  repository: RepositorySummary;
   pullRequest: PullRequestMetadata;
   token: string;
   octokit: OctokitClient;
 }
 
-interface PullRequestApiResponse {
+interface GithubPullRequestApiResponse {
   title?: string;
   html_url: string;
   head?: {
@@ -48,7 +51,7 @@ interface RepositoryContentApiResponse {
 
 interface PullRequestDetails {
   title?: string;
-  html_url: string;
+  htmlUrl: string;
   headSha: string;
 }
 
@@ -91,7 +94,7 @@ async function resolvePullRequestContext(): Promise<PullRequestContext | null> {
   const octokit = github.getOctokit(token);
   const pullRequestDetails = await fetchPullRequestDetails(token, owner, repo, pullRequestNumber);
 
-  const repository: RepositoryInfo = {
+  const repository: RepositorySummary = {
     name: repo,
     owner,
     url: `https://github.com/${owner}/${repo}`
@@ -100,7 +103,8 @@ async function resolvePullRequestContext(): Promise<PullRequestContext | null> {
   const pullRequest: PullRequestMetadata = {
     name: pullRequestDetails.title ?? `Pull Request #${pullRequestNumber}`,
     number: pullRequestNumber,
-    url: pullRequestDetails.html_url,
+    url: pullRequestDetails.htmlUrl,
+    commitHash: pullRequestDetails.headSha,
     headSha: pullRequestDetails.headSha
   };
 
@@ -114,7 +118,7 @@ async function resolvePullRequestContext(): Promise<PullRequestContext | null> {
 
 async function listChangedFiles(
   octokit: OctokitClient,
-  repository: RepositoryInfo,
+  repository: RepositorySummary,
   pullRequest: PullRequestMetadata
 ): Promise<PullRequestFile[]> {
   return await github.paginate(
@@ -135,7 +139,7 @@ async function fetchPullRequestDetails(
   repo: string,
   pullNumber: number
 ): Promise<PullRequestDetails> {
-  const data = await requestGithubJson<PullRequestApiResponse>(
+  const data = await requestGithubJson<GithubPullRequestApiResponse>(
     token,
     `/repos/${owner}/${repo}/pulls/${pullNumber}`
   );
@@ -148,14 +152,14 @@ async function fetchPullRequestDetails(
 
   return {
     title: data.title,
-    html_url: data.html_url,
+    htmlUrl: data.html_url,
     headSha
   };
 }
 
 async function buildAffectedFilesModel(
   token: string,
-  repository: RepositoryInfo,
+  repository: RepositorySummary,
   pullRequest: PullRequestMetadata,
   files: PullRequestFile[],
   fileComments: FileCommentsMap
@@ -188,7 +192,7 @@ async function buildAffectedFilesModel(
 
 async function fetchFileContent(
   token: string,
-  repository: RepositoryInfo,
+  repository: RepositorySummary,
   pullRequest: PullRequestMetadata,
   path: string
 ): Promise<string> {
@@ -236,7 +240,7 @@ function encodeRepositoryPath(path: string): string {
 
 async function fetchCommentsForFiles(
   token: string,
-  repository: RepositoryInfo,
+  repository: RepositorySummary,
   pullRequest: PullRequestMetadata
 ): Promise<FileCommentsMap> {
   const comments = await paginatePullRequestComments(token, repository, pullRequest);
@@ -262,7 +266,7 @@ async function fetchCommentsForFiles(
 
 async function paginatePullRequestComments(
   token: string,
-  repository: RepositoryInfo,
+  repository: RepositorySummary,
   pullRequest: PullRequestMetadata
 ): Promise<PullRequestReviewComment[]> {
   const perPage = 100;
@@ -322,15 +326,17 @@ function buildCommentThreads(comments: PullRequestReviewComment[]): FileCommentT
     }
 
     thread.comments.push({
+      id: String(comment.id),
       content: comment.body ?? '',
-      author: comment.user?.login ?? 'unknown'
+      author: comment.user?.login ?? 'unknown',
+      parentId: comment.in_reply_to_id ? String(comment.in_reply_to_id) : undefined
     });
   }
 
   return Array.from(threads.values());
 }
 
-function fetchCourseInfo(): CourseInfo | null {
+function fetchCourseInfo(): CourseMetadata | null {
   const id = process.env.COURSE_ID;
   const name = process.env.COURSE_NAME;
 
@@ -345,11 +351,22 @@ function fetchCourseInfo(): CourseInfo | null {
 async function requestGithubJson<T>(
   token: string,
   path: string,
-  query?: Record<string, string>
+  query?: Record<string, string>,
+  options?: {
+    method?: 'GET' | 'POST' | 'PATCH' | 'PUT' | 'DELETE';
+    body?: unknown;
+    headers?: Record<string, string>;
+  }
 ): Promise<T> {
   const url = buildGithubUrl(path, query);
   const response = await fetch(url, {
-    headers: buildGithubHeaders(token)
+    method: options?.method ?? 'GET',
+    headers: {
+      ...buildGithubHeaders(token),
+      ...(options?.headers ?? {}),
+      ...(options?.body ? { 'Content-Type': 'application/json' } : {})
+    },
+    body: options?.body ? JSON.stringify(options.body) : undefined
   });
 
   const data = (await response.json()) as T;
@@ -381,6 +398,36 @@ function buildGithubHeaders(token: string): Record<string, string> {
     'User-Agent': 'code-review-assistant-action',
     'X-GitHub-Api-Version': '2022-11-28'
   };
+}
+
+async function addCommentToPullRequest(
+  token: string,
+  repository: RepositorySummary,
+  pullRequest: PullRequestMetadata,
+  comment: ReviewComment
+): Promise<void> {
+  const body: Record<string, unknown> = {
+    body: comment.content
+  };
+
+  if (comment.type === 'reply') {
+    body.in_reply_to = Number(comment.inReplyTo);
+  } else {
+    body.commit_id = comment.commitHash;
+    body.path = comment.path;
+    body.line = comment.line;
+    body.side = comment.side;
+  }
+
+  await requestGithubJson(
+    token,
+    `/repos/${repository.owner}/${repository.name}/pulls/${pullRequest.number}/comments`,
+    undefined,
+    {
+      method: 'POST',
+      body
+    }
+  );
 }
 
 async function run(): Promise<void> {
@@ -415,17 +462,28 @@ async function run(): Promise<void> {
       return;
     }
 
-    const result: ReviewResult = {
-      repository: context.repository,
-      course: courseInfo,
+    const repositorySummary: RepositorySummary = {
+      name: context.repository.name,
+      owner: context.repository.owner,
+      url: context.repository.url
+    };
+
+    const repositoryResult: Repository = {
+      ...repositorySummary,
       pullRequests: [
         {
           name: context.pullRequest.name,
           number: context.pullRequest.number,
           url: context.pullRequest.url,
+          commitHash: context.pullRequest.commitHash,
           files: affectedFiles
         }
       ]
+    };
+
+    const result: Course = {
+      ...courseInfo,
+      repository: repositoryResult
     };
 
     core.info(`Processed ${affectedFiles.length} changed files for pull request #${context.pullRequest.number}.`);

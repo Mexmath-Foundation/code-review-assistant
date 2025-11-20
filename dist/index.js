@@ -63,7 +63,8 @@ async function resolvePullRequestContext() {
     const pullRequest = {
         name: pullRequestDetails.title ?? `Pull Request #${pullRequestNumber}`,
         number: pullRequestNumber,
-        url: pullRequestDetails.html_url,
+        url: pullRequestDetails.htmlUrl,
+        commitHash: pullRequestDetails.headSha,
         headSha: pullRequestDetails.headSha
     };
     return {
@@ -89,7 +90,7 @@ async function fetchPullRequestDetails(token, owner, repo, pullNumber) {
     }
     return {
         title: data.title,
-        html_url: data.html_url,
+        htmlUrl: data.html_url,
         headSha
     };
 }
@@ -204,8 +205,10 @@ function buildCommentThreads(comments) {
             threads.set(rootId, thread);
         }
         thread.comments.push({
+            id: String(comment.id),
             content: comment.body ?? '',
-            author: comment.user?.login ?? 'unknown'
+            author: comment.user?.login ?? 'unknown',
+            parentId: comment.in_reply_to_id ? String(comment.in_reply_to_id) : undefined
         });
     }
     return Array.from(threads.values());
@@ -219,10 +222,16 @@ function fetchCourseInfo() {
     }
     return { id, name };
 }
-async function requestGithubJson(token, path, query) {
+async function requestGithubJson(token, path, query, options) {
     const url = buildGithubUrl(path, query);
     const response = await fetch(url, {
-        headers: buildGithubHeaders(token)
+        method: options?.method ?? 'GET',
+        headers: {
+            ...buildGithubHeaders(token),
+            ...(options?.headers ?? {}),
+            ...(options?.body ? { 'Content-Type': 'application/json' } : {})
+        },
+        body: options?.body ? JSON.stringify(options.body) : undefined
     });
     const data = (await response.json());
     if (!response.ok) {
@@ -248,6 +257,24 @@ function buildGithubHeaders(token) {
         'X-GitHub-Api-Version': '2022-11-28'
     };
 }
+async function addCommentToPullRequest(token, repository, pullRequest, comment) {
+    const body = {
+        body: comment.content
+    };
+    if (comment.type === 'reply') {
+        body.in_reply_to = Number(comment.inReplyTo);
+    }
+    else {
+        body.commit_id = comment.commitHash;
+        body.path = comment.path;
+        body.line = comment.line;
+        body.side = comment.side;
+    }
+    await requestGithubJson(token, `/repos/${repository.owner}/${repository.name}/pulls/${pullRequest.number}/comments`, undefined, {
+        method: 'POST',
+        body
+    });
+}
 async function run() {
     try {
         const context = await resolvePullRequestContext();
@@ -266,17 +293,26 @@ async function run() {
             core.setFailed('Course information is required but could not be determined from the environment.');
             return;
         }
-        const result = {
-            repository: context.repository,
-            course: courseInfo,
+        const repositorySummary = {
+            name: context.repository.name,
+            owner: context.repository.owner,
+            url: context.repository.url
+        };
+        const repositoryResult = {
+            ...repositorySummary,
             pullRequests: [
                 {
                     name: context.pullRequest.name,
                     number: context.pullRequest.number,
                     url: context.pullRequest.url,
+                    commitHash: context.pullRequest.commitHash,
                     files: affectedFiles
                 }
             ]
+        };
+        const result = {
+            ...courseInfo,
+            repository: repositoryResult
         };
         core.info(`Processed ${affectedFiles.length} changed files for pull request #${context.pullRequest.number}.`);
         core.info(JSON.stringify(result, null, 2));
