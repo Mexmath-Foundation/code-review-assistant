@@ -4,9 +4,9 @@ import type {
   Course,
   FileChange,
   FileCommentThread,
-  PullRequestSummary,
+  PullRequest,
+  PullRequestReview,
   Repository,
-  RepositorySummary,
   ReviewComment
 } from './model';
 
@@ -18,10 +18,11 @@ type PullRequestFile = {
   status?: string;
 };
 
-type PullRequestMetadata = PullRequestSummary & {
+type PullRequestMetadata = Omit<PullRequest, 'files'> & {
   headSha: string;
 };
 
+type RepositorySummary = Pick<Repository, 'name' | 'owner' | 'url'>;
 type CourseMetadata = Omit<Course, 'repository'>;
 
 type FileCommentsMap = Record<string, FileCommentThread[]>;
@@ -308,33 +309,62 @@ function fetchCourseInfo(): CourseMetadata | null {
   return { id, name };
 }
 
-async function addCommentToPullRequest(
-  octokit: OctokitClient,
-  repository: RepositorySummary,
-  pullRequest: PullRequestMetadata,
-  comment: ReviewComment
+async function addComment(
+  owner: string,
+  repo: string,
+  number: number,
+  commitHash: string,
+  comment: ReviewComment,
+  octokit: OctokitClient
 ): Promise<void> {
-  if (comment.type === 'reply') {
-    await octokit.rest.pulls.createReviewComment({
-      owner: repository.owner,
-      repo: repository.name,
-      pull_number: pullRequest.number,
-      body: comment.content,
-      in_reply_to: Number(comment.inReplyTo)
-    });
-    return;
-  }
 
-  await octokit.rest.pulls.createReviewComment({
-    owner: repository.owner,
-    repo: repository.name,
-    pull_number: pullRequest.number,
-    body: comment.content,
-    commit_id: comment.commitHash,
-    path: comment.path,
-    line: comment.line,
-    side: comment.side
-  });
+  switch (comment.type) {
+    case 'general':
+      await octokit.rest.pulls.createReviewComment({
+        owner: owner,
+        repo: repo,
+        pull_number: number,
+        body: comment.content
+      });
+      break;
+    case 'reply':
+      await octokit.rest.pulls.createReviewComment({
+        owner: owner,
+        repo: repo,
+        pull_number: number,
+        body: comment.content,
+        in_reply_to: Number(comment.inReplyTo)
+      });
+      break;
+    case 'line':
+      await octokit.rest.pulls.createReviewComment({
+        owner: owner,
+        repo: repo,
+        pull_number: number,
+        body: comment.content,
+        commit_id: commitHash,
+        path: comment.path,
+        line: comment.line,
+        side: comment.side
+      });
+      break;
+  }
+}
+
+async function addReview(
+  review: PullRequestReview,
+  octokit: OctokitClient
+): Promise<void> {
+  for (const comment of review.comments) {
+    await addComment(
+      review.repositoryOwner,
+      review.repositoryName,
+      review.pullRequestNumber,
+      review.pullRequestCommitHash,
+      comment,
+      octokit
+    );
+  }
 }
 
 async function run(): Promise<void> {
@@ -370,15 +400,15 @@ async function run(): Promise<void> {
     }
 
     const repositoryResult: Repository = {
-      summary: context.repository,
+      name: context.repository.name,
+      owner: context.repository.owner,
+      url: context.repository.url,
       pullRequests: [
         {
-          summary: {
-            name: context.pullRequest.name,
-            number: context.pullRequest.number,
-            url: context.pullRequest.url,
-            commitHash: context.pullRequest.commitHash
-          },
+          name: context.pullRequest.name,
+          number: context.pullRequest.number,
+          url: context.pullRequest.url,
+          commitHash: context.pullRequest.commitHash,
           files: affectedFiles
         }
       ]

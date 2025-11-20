@@ -216,27 +216,43 @@ function fetchCourseInfo() {
     }
     return { id, name };
 }
-async function addCommentToPullRequest(octokit, repository, pullRequest, comment) {
-    if (comment.type === 'reply') {
-        await octokit.rest.pulls.createReviewComment({
-            owner: repository.owner,
-            repo: repository.name,
-            pull_number: pullRequest.number,
-            body: comment.content,
-            in_reply_to: Number(comment.inReplyTo)
-        });
-        return;
+async function addComment(owner, repo, number, commitHash, comment, octokit) {
+    switch (comment.type) {
+        case 'general':
+            await octokit.rest.pulls.createReviewComment({
+                owner: owner,
+                repo: repo,
+                pull_number: number,
+                body: comment.content
+            });
+            break;
+        case 'reply':
+            await octokit.rest.pulls.createReviewComment({
+                owner: owner,
+                repo: repo,
+                pull_number: number,
+                body: comment.content,
+                in_reply_to: Number(comment.inReplyTo)
+            });
+            break;
+        case 'line':
+            await octokit.rest.pulls.createReviewComment({
+                owner: owner,
+                repo: repo,
+                pull_number: number,
+                body: comment.content,
+                commit_id: commitHash,
+                path: comment.path,
+                line: comment.line,
+                side: comment.side
+            });
+            break;
     }
-    await octokit.rest.pulls.createReviewComment({
-        owner: repository.owner,
-        repo: repository.name,
-        pull_number: pullRequest.number,
-        body: comment.content,
-        commit_id: comment.commitHash,
-        path: comment.path,
-        line: comment.line,
-        side: comment.side
-    });
+}
+async function addReview(repository, review, octokit) {
+    for (const comment of review.comments) {
+        await addComment(repository.owner, repository.name, review.number, review.commitHash, comment, octokit);
+    }
 }
 async function run() {
     try {
@@ -257,15 +273,15 @@ async function run() {
             return;
         }
         const repositoryResult = {
-            summary: context.repository,
+            name: context.repository.name,
+            owner: context.repository.owner,
+            url: context.repository.url,
             pullRequests: [
                 {
-                    summary: {
-                        name: context.pullRequest.name,
-                        number: context.pullRequest.number,
-                        url: context.pullRequest.url,
-                        commitHash: context.pullRequest.commitHash
-                    },
+                    name: context.pullRequest.name,
+                    number: context.pullRequest.number,
+                    url: context.pullRequest.url,
+                    commitHash: context.pullRequest.commitHash,
                     files: affectedFiles
                 }
             ]

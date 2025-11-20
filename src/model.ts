@@ -6,21 +6,11 @@ export interface FileChange {
   commentThreads: FileCommentThread[];
 }
 
-export interface RepositorySummary {
-  name: string;
-  owner: string;
-  url: string;
-}
-
-export interface PullRequestSummary {
+export interface PullRequest {
   name: string;
   number: number;
   url: string;
   commitHash: string;
-}
-
-export interface PullRequest {
-  summary: PullRequestSummary;
   files: FileChange[];
 }
 
@@ -41,26 +31,46 @@ export interface NewComment {
   parentId?: string;
 }
 
+export interface GenralComment {
+  type: 'general';
+  content: string;
+}
+
 export interface ReplyComment {
   type: 'reply';
   content: string;
   inReplyTo: string;
 }
 
-export interface CodeComment {
-  type: 'code';
+export interface CodeLineComment {
+  type: 'line';
   content: string;
-  commitHash: string;
   path: string;
   line: number;
   side: 'LEFT' | 'RIGHT';
 }
 
-export interface Review {
 
+export type ReviewComment = GenralComment | ReplyComment | CodeLineComment;
+
+export interface PullRequestReview {
+  repositoryName: string;
+  repositoryOwner: string;
+  pullRequestNumber: number;
+  pullRequestUrl: string;
+  pullRequestCommitHash: string;
+  comments: ReviewComment[];
 }
 
-export type ReviewComment = ReplyComment | CodeComment;
+export interface RepositoryReview {
+  name: string;
+  owner: string;
+  url: string;
+  onBehaf: string
+  pullRequestsReviews: PullRequestReview[];
+}
+
+
 
 export interface Course {
   id: string;
@@ -69,6 +79,8 @@ export interface Course {
 }
 
 export interface Repository {
-  summary: RepositorySummary;
+  name: string;
+  owner: string;
+  url: string;
   pullRequests: PullRequest[];
 }
