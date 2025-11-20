@@ -32,14 +32,6 @@ interface PullRequestContext {
   octokit: OctokitClient;
 }
 
-interface GithubPullRequestApiResponse {
-  title?: string;
-  html_url: string;
-  head?: {
-    sha?: string;
-  };
-}
-
 interface PullRequestDetails {
   title?: string;
   htmlUrl: string;

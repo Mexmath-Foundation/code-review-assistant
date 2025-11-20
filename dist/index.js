@@ -35,7 +35,6 @@ var __importStar = (this && this.__importStar) || (function () {
 Object.defineProperty(exports, "__esModule", { value: true });
 const core = __importStar(require("@actions/core"));
 const github = __importStar(require("@actions/github"));
-const GITHUB_API_URL = process.env.GITHUB_API_URL || 'https://api.github.com';
 async function resolvePullRequestContext() {
     const token = core.getInput('github-token') || process.env.GITHUB_TOKEN;
     if (!token) {
@@ -54,7 +53,7 @@ async function resolvePullRequestContext() {
         return null;
     }
     const octokit = github.getOctokit(token);
-    const pullRequestDetails = await fetchPullRequestDetails(token, owner, repo, pullRequestNumber);
+    const pullRequestDetails = await fetchPullRequestDetails(octokit, owner, repo, pullRequestNumber);
     const repository = {
         name: repo,
         owner,
@@ -70,7 +69,6 @@ async function resolvePullRequestContext() {
     return {
         repository,
         pullRequest,
-        token,
         octokit
     };
 }
@@ -82,25 +80,29 @@ async function listChangedFiles(octokit, repository, pullRequest) {
         per_page: 100
     }, (response) => response.data);
 }
-async function fetchPullRequestDetails(token, owner, repo, pullNumber) {
-    const data = await requestGithubJson(token, `/repos/${owner}/${repo}/pulls/${pullNumber}`);
-    const headSha = data.head?.sha;
+async function fetchPullRequestDetails(octokit, owner, repo, pullNumber) {
+    const response = await octokit.rest.pulls.get({
+        owner,
+        repo,
+        pull_number: pullNumber
+    });
+    const headSha = response.data.head?.sha;
     if (!headSha) {
         throw new Error('Unable to determine the pull request head SHA.');
     }
     return {
-        title: data.title,
-        htmlUrl: data.html_url,
+        title: response.data.title,
+        htmlUrl: response.data.html_url,
         headSha
     };
 }
-async function buildAffectedFilesModel(token, repository, pullRequest, files, fileComments) {
+async function buildAffectedFilesModel(octokit, repository, pullRequest, files, fileComments) {
     const affectedFiles = [];
     for (const file of files) {
         let content = '';
         if (file.status !== 'removed') {
             try {
-                content = await fetchFileContent(token, repository, pullRequest, file.filename);
+                content = await fetchFileContent(octokit, repository, pullRequest, file.filename);
             }
             catch (error) {
                 const message = error instanceof Error ? error.message : 'Unknown error';
@@ -117,19 +119,23 @@ async function buildAffectedFilesModel(token, repository, pullRequest, files, fi
     }
     return affectedFiles;
 }
-async function fetchFileContent(token, repository, pullRequest, path) {
-    const encodedPath = encodeRepositoryPath(path);
-    const response = await requestGithubJson(token, `/repos/${repository.owner}/${repository.name}/contents/${encodedPath}`, { ref: pullRequest.headSha });
-    if (Array.isArray(response)) {
+async function fetchFileContent(octokit, repository, pullRequest, path) {
+    const response = await octokit.rest.repos.getContent({
+        owner: repository.owner,
+        repo: repository.name,
+        path,
+        ref: pullRequest.headSha
+    });
+    if (Array.isArray(response.data)) {
         return '';
     }
-    if (response.type && response.type !== 'file') {
+    if (response.data.type && response.data.type !== 'file') {
         return '';
     }
-    if (typeof response.content !== 'string') {
+    if (typeof response.data.content !== 'string') {
         return '';
     }
-    return decodeFileContent(response.content, response.encoding);
+    return decodeFileContent(response.data.content, response.data.encoding);
 }
 function extractFileName(filePath) {
     const segments = filePath.split('/');
@@ -147,8 +153,13 @@ function encodeRepositoryPath(path) {
         .map((segment) => encodeURIComponent(segment))
         .join('/');
 }
-async function fetchCommentsForFiles(token, repository, pullRequest) {
-    const comments = await paginatePullRequestComments(token, repository, pullRequest);
+async function fetchCommentsForFiles(octokit, repository, pullRequest) {
+    const comments = await github.paginate(octokit.rest.pulls.listReviewComments, {
+        owner: repository.owner,
+        repo: repository.name,
+        pull_number: pullRequest.number,
+        per_page: 100
+    }, (response) => response.data);
     const groupedByPath = new Map();
     for (const comment of comments) {
         if (!comment.path) {
@@ -163,23 +174,6 @@ async function fetchCommentsForFiles(token, repository, pullRequest) {
         result[path] = buildCommentThreads(pathComments);
     }
     return result;
-}
-async function paginatePullRequestComments(token, repository, pullRequest) {
-    const perPage = 100;
-    const comments = [];
-    let page = 1;
-    while (true) {
-        const pageData = await requestGithubJson(token, `/repos/${repository.owner}/${repository.name}/pulls/${pullRequest.number}/comments`, { per_page: perPage.toString(), page: page.toString() });
-        if (!Array.isArray(pageData)) {
-            break;
-        }
-        comments.push(...pageData);
-        if (pageData.length < perPage) {
-            break;
-        }
-        page += 1;
-    }
-    return comments;
 }
 function buildCommentThreads(comments) {
     const threads = new Map();
@@ -222,57 +216,26 @@ function fetchCourseInfo() {
     }
     return { id, name };
 }
-async function requestGithubJson(token, path, query, options) {
-    const url = buildGithubUrl(path, query);
-    const response = await fetch(url, {
-        method: options?.method ?? 'GET',
-        headers: {
-            ...buildGithubHeaders(token),
-            ...(options?.headers ?? {}),
-            ...(options?.body ? { 'Content-Type': 'application/json' } : {})
-        },
-        body: options?.body ? JSON.stringify(options.body) : undefined
-    });
-    const data = (await response.json());
-    if (!response.ok) {
-        const errorMessage = typeof data === 'object' && data !== null && 'message' in data ? data.message : undefined;
-        throw new Error(errorMessage || `GitHub API request failed with status ${response.status}`);
-    }
-    return data;
-}
-function buildGithubUrl(path, query) {
-    const url = new URL(path.startsWith('/') ? path : `/${path}`, GITHUB_API_URL);
-    if (query) {
-        for (const [key, value] of Object.entries(query)) {
-            url.searchParams.set(key, value);
-        }
-    }
-    return url.toString();
-}
-function buildGithubHeaders(token) {
-    return {
-        Authorization: `Bearer ${token}`,
-        Accept: 'application/vnd.github+json',
-        'User-Agent': 'code-review-assistant-action',
-        'X-GitHub-Api-Version': '2022-11-28'
-    };
-}
-async function addCommentToPullRequest(token, repository, pullRequest, comment) {
-    const body = {
-        body: comment.content
-    };
+async function addCommentToPullRequest(octokit, repository, pullRequest, comment) {
     if (comment.type === 'reply') {
-        body.in_reply_to = Number(comment.inReplyTo);
+        await octokit.rest.pulls.createReviewComment({
+            owner: repository.owner,
+            repo: repository.name,
+            pull_number: pullRequest.number,
+            body: comment.content,
+            in_reply_to: Number(comment.inReplyTo)
+        });
+        return;
     }
-    else {
-        body.commit_id = comment.commitHash;
-        body.path = comment.path;
-        body.line = comment.line;
-        body.side = comment.side;
-    }
-    await requestGithubJson(token, `/repos/${repository.owner}/${repository.name}/pulls/${pullRequest.number}/comments`, undefined, {
-        method: 'POST',
-        body
+    await octokit.rest.pulls.createReviewComment({
+        owner: repository.owner,
+        repo: repository.name,
+        pull_number: pullRequest.number,
+        body: comment.content,
+        commit_id: comment.commitHash,
+        path: comment.path,
+        line: comment.line,
+        side: comment.side
     });
 }
 async function run() {
@@ -286,8 +249,8 @@ async function run() {
             core.info('No changed files found for this pull request.');
             return;
         }
-        const fileComments = await fetchCommentsForFiles(context.token, context.repository, context.pullRequest);
-        const affectedFiles = await buildAffectedFilesModel(context.token, context.repository, context.pullRequest, files, fileComments);
+        const fileComments = await fetchCommentsForFiles(context.octokit, context.repository, context.pullRequest);
+        const affectedFiles = await buildAffectedFilesModel(context.octokit, context.repository, context.pullRequest, files, fileComments);
         const courseInfo = fetchCourseInfo();
         if (!courseInfo) {
             core.setFailed('Course information is required but could not be determined from the environment.');
