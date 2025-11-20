@@ -4,8 +4,9 @@ import type {
   Course,
   FileChange,
   FileCommentThread,
-  PullRequest,
+  PullRequestSummary,
   Repository,
+  RepositorySummary,
   ReviewComment
 } from './model';
 
@@ -17,11 +18,10 @@ type PullRequestFile = {
   status?: string;
 };
 
-type PullRequestMetadata = Omit<PullRequest, 'files'> & {
+type PullRequestMetadata = PullRequestSummary & {
   headSha: string;
 };
 
-type RepositorySummary = Pick<Repository, 'name' | 'owner' | 'url'>;
 type CourseMetadata = Omit<Course, 'repository'>;
 
 type FileCommentsMap = Record<string, FileCommentThread[]>;
@@ -369,20 +369,16 @@ async function run(): Promise<void> {
       return;
     }
 
-    const repositorySummary: RepositorySummary = {
-      name: context.repository.name,
-      owner: context.repository.owner,
-      url: context.repository.url
-    };
-
     const repositoryResult: Repository = {
-      ...repositorySummary,
+      summary: context.repository,
       pullRequests: [
         {
-          name: context.pullRequest.name,
-          number: context.pullRequest.number,
-          url: context.pullRequest.url,
-          commitHash: context.pullRequest.commitHash,
+          summary: {
+            name: context.pullRequest.name,
+            number: context.pullRequest.number,
+            url: context.pullRequest.url,
+            commitHash: context.pullRequest.commitHash
+          },
           files: affectedFiles
         }
       ]

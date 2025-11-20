@@ -6,11 +6,21 @@ export interface FileChange {
   commentThreads: FileCommentThread[];
 }
 
-export interface PullRequest {
+export interface RepositorySummary {
+  name: string;
+  owner: string;
+  url: string;
+}
+
+export interface PullRequestSummary {
   name: string;
   number: number;
   url: string;
   commitHash: string;
+}
+
+export interface PullRequest {
+  summary: PullRequestSummary;
   files: FileChange[];
 }
 
@@ -46,6 +56,10 @@ export interface CodeComment {
   side: 'LEFT' | 'RIGHT';
 }
 
+export interface Review {
+
+}
+
 export type ReviewComment = ReplyComment | CodeComment;
 
 export interface Course {
@@ -55,8 +69,6 @@ export interface Course {
 }
 
 export interface Repository {
-  name: string;
-  owner: string;
-  url: string;
+  summary: RepositorySummary;
   pullRequests: PullRequest[];
 }

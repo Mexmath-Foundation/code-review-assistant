@@ -256,19 +256,16 @@ async function run() {
             core.setFailed('Course information is required but could not be determined from the environment.');
             return;
         }
-        const repositorySummary = {
-            name: context.repository.name,
-            owner: context.repository.owner,
-            url: context.repository.url
-        };
         const repositoryResult = {
-            ...repositorySummary,
+            summary: context.repository,
             pullRequests: [
                 {
-                    name: context.pullRequest.name,
-                    number: context.pullRequest.number,
-                    url: context.pullRequest.url,
-                    commitHash: context.pullRequest.commitHash,
+                    summary: {
+                        name: context.pullRequest.name,
+                        number: context.pullRequest.number,
+                        url: context.pullRequest.url,
+                        commitHash: context.pullRequest.commitHash
+                    },
                     files: affectedFiles
                 }
             ]
