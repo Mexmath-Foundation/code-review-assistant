@@ -6,7 +6,7 @@ export interface FileChange {
   commentThreads: FileCommentThread[];
 }
 
-export interface PullRequestEntry {
+export interface PullRequest {
   name: string;
   number: number;
   url: string;
@@ -58,5 +58,5 @@ export interface Repository {
   name: string;
   owner: string;
   url: string;
-  pullRequests: PullRequestEntry[];
+  pullRequests: PullRequest[];
 }

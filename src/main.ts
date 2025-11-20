@@ -4,7 +4,7 @@ import type {
   Course,
   FileChange,
   FileCommentThread,
-  PullRequestEntry,
+  PullRequest,
   Repository,
   ReviewComment
 } from './model';
@@ -19,7 +19,7 @@ type PullRequestFile = {
 
 const GITHUB_API_URL = process.env.GITHUB_API_URL || 'https://api.github.com';
 
-type PullRequestMetadata = Omit<PullRequestEntry, 'files'> & {
+type PullRequestMetadata = Omit<PullRequest, 'files'> & {
   headSha: string;
 };
 
