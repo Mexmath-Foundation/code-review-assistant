@@ -17,8 +17,6 @@ type PullRequestFile = {
   status?: string;
 };
 
-const GITHUB_API_URL = process.env.GITHUB_API_URL || 'https://api.github.com';
-
 type PullRequestMetadata = Omit<PullRequest, 'files'> & {
   headSha: string;
 };
@@ -31,7 +29,6 @@ type FileCommentsMap = Record<string, FileCommentThread[]>;
 interface PullRequestContext {
   repository: RepositorySummary;
   pullRequest: PullRequestMetadata;
-  token: string;
   octokit: OctokitClient;
 }
 
@@ -41,12 +38,6 @@ interface GithubPullRequestApiResponse {
   head?: {
     sha?: string;
   };
-}
-
-interface RepositoryContentApiResponse {
-  content?: string;
-  encoding?: string;
-  type?: string;
 }
 
 interface PullRequestDetails {
@@ -92,7 +83,7 @@ async function resolvePullRequestContext(): Promise<PullRequestContext | null> {
   }
 
   const octokit = github.getOctokit(token);
-  const pullRequestDetails = await fetchPullRequestDetails(token, owner, repo, pullRequestNumber);
+  const pullRequestDetails = await fetchPullRequestDetails(octokit, owner, repo, pullRequestNumber);
 
   const repository: RepositorySummary = {
     name: repo,
@@ -111,7 +102,6 @@ async function resolvePullRequestContext(): Promise<PullRequestContext | null> {
   return {
     repository,
     pullRequest,
-    token,
     octokit
   };
 }
@@ -134,31 +124,32 @@ async function listChangedFiles(
 }
 
 async function fetchPullRequestDetails(
-  token: string,
+  octokit: OctokitClient,
   owner: string,
   repo: string,
   pullNumber: number
 ): Promise<PullRequestDetails> {
-  const data = await requestGithubJson<GithubPullRequestApiResponse>(
-    token,
-    `/repos/${owner}/${repo}/pulls/${pullNumber}`
-  );
+  const response = await octokit.rest.pulls.get({
+    owner,
+    repo,
+    pull_number: pullNumber
+  });
 
-  const headSha = data.head?.sha;
+  const headSha = response.data.head?.sha;
 
   if (!headSha) {
     throw new Error('Unable to determine the pull request head SHA.');
   }
 
   return {
-    title: data.title,
-    htmlUrl: data.html_url,
+    title: response.data.title,
+    htmlUrl: response.data.html_url,
     headSha
   };
 }
 
 async function buildAffectedFilesModel(
-  token: string,
+  octokit: OctokitClient,
   repository: RepositorySummary,
   pullRequest: PullRequestMetadata,
   files: PullRequestFile[],
@@ -171,7 +162,7 @@ async function buildAffectedFilesModel(
 
     if (file.status !== 'removed') {
       try {
-        content = await fetchFileContent(token, repository, pullRequest, file.filename);
+        content = await fetchFileContent(octokit, repository, pullRequest, file.filename);
       } catch (error) {
         const message = error instanceof Error ? error.message : 'Unknown error';
         core.info(`Warning: Unable to retrieve content for ${file.filename}: ${message}`);
@@ -191,31 +182,31 @@ async function buildAffectedFilesModel(
 }
 
 async function fetchFileContent(
-  token: string,
+  octokit: OctokitClient,
   repository: RepositorySummary,
   pullRequest: PullRequestMetadata,
   path: string
 ): Promise<string> {
-  const encodedPath = encodeRepositoryPath(path);
-  const response = await requestGithubJson<RepositoryContentApiResponse | RepositoryContentApiResponse[]>(
-    token,
-    `/repos/${repository.owner}/${repository.name}/contents/${encodedPath}`,
-    { ref: pullRequest.headSha }
-  );
+  const response = await octokit.rest.repos.getContent({
+    owner: repository.owner,
+    repo: repository.name,
+    path,
+    ref: pullRequest.headSha
+  });
 
-  if (Array.isArray(response)) {
+  if (Array.isArray(response.data)) {
     return '';
   }
 
-  if (response.type && response.type !== 'file') {
+  if (response.data.type && response.data.type !== 'file') {
     return '';
   }
 
-  if (typeof response.content !== 'string') {
+  if (typeof response.data.content !== 'string') {
     return '';
   }
 
-  return decodeFileContent(response.content, response.encoding);
+  return decodeFileContent(response.data.content, response.data.encoding);
 }
 
 function extractFileName(filePath: string): string {
@@ -239,11 +230,20 @@ function encodeRepositoryPath(path: string): string {
 }
 
 async function fetchCommentsForFiles(
-  token: string,
+  octokit: OctokitClient,
   repository: RepositorySummary,
   pullRequest: PullRequestMetadata
 ): Promise<FileCommentsMap> {
-  const comments = await paginatePullRequestComments(token, repository, pullRequest);
+  const comments = await github.paginate(
+    octokit.rest.pulls.listReviewComments,
+    {
+      owner: repository.owner,
+      repo: repository.name,
+      pull_number: pullRequest.number,
+      per_page: 100
+    },
+    (response) => response.data as PullRequestReviewComment[]
+  );
   const groupedByPath = new Map<string, PullRequestReviewComment[]>();
 
   for (const comment of comments) {
@@ -262,38 +262,6 @@ async function fetchCommentsForFiles(
   }
 
   return result;
-}
-
-async function paginatePullRequestComments(
-  token: string,
-  repository: RepositorySummary,
-  pullRequest: PullRequestMetadata
-): Promise<PullRequestReviewComment[]> {
-  const perPage = 100;
-  const comments: PullRequestReviewComment[] = [];
-  let page = 1;
-
-  while (true) {
-    const pageData = await requestGithubJson<PullRequestReviewComment[]>(
-      token,
-      `/repos/${repository.owner}/${repository.name}/pulls/${pullRequest.number}/comments`,
-      { per_page: perPage.toString(), page: page.toString() }
-    );
-
-    if (!Array.isArray(pageData)) {
-      break;
-    }
-
-    comments.push(...pageData);
-
-    if (pageData.length < perPage) {
-      break;
-    }
-
-    page += 1;
-  }
-
-  return comments;
 }
 
 function buildCommentThreads(comments: PullRequestReviewComment[]): FileCommentThread[] {
@@ -348,86 +316,33 @@ function fetchCourseInfo(): CourseMetadata | null {
   return { id, name };
 }
 
-async function requestGithubJson<T>(
-  token: string,
-  path: string,
-  query?: Record<string, string>,
-  options?: {
-    method?: 'GET' | 'POST' | 'PATCH' | 'PUT' | 'DELETE';
-    body?: unknown;
-    headers?: Record<string, string>;
-  }
-): Promise<T> {
-  const url = buildGithubUrl(path, query);
-  const response = await fetch(url, {
-    method: options?.method ?? 'GET',
-    headers: {
-      ...buildGithubHeaders(token),
-      ...(options?.headers ?? {}),
-      ...(options?.body ? { 'Content-Type': 'application/json' } : {})
-    },
-    body: options?.body ? JSON.stringify(options.body) : undefined
-  });
-
-  const data = (await response.json()) as T;
-
-  if (!response.ok) {
-    const errorMessage = typeof data === 'object' && data !== null && 'message' in data ? (data as { message?: string }).message : undefined;
-    throw new Error(errorMessage || `GitHub API request failed with status ${response.status}`);
-  }
-
-  return data;
-}
-
-function buildGithubUrl(path: string, query?: Record<string, string>): string {
-  const url = new URL(path.startsWith('/') ? path : `/${path}`, GITHUB_API_URL);
-
-  if (query) {
-    for (const [key, value] of Object.entries(query)) {
-      url.searchParams.set(key, value);
-    }
-  }
-
-  return url.toString();
-}
-
-function buildGithubHeaders(token: string): Record<string, string> {
-  return {
-    Authorization: `Bearer ${token}`,
-    Accept: 'application/vnd.github+json',
-    'User-Agent': 'code-review-assistant-action',
-    'X-GitHub-Api-Version': '2022-11-28'
-  };
-}
-
 async function addCommentToPullRequest(
-  token: string,
+  octokit: OctokitClient,
   repository: RepositorySummary,
   pullRequest: PullRequestMetadata,
   comment: ReviewComment
 ): Promise<void> {
-  const body: Record<string, unknown> = {
-    body: comment.content
-  };
-
   if (comment.type === 'reply') {
-    body.in_reply_to = Number(comment.inReplyTo);
-  } else {
-    body.commit_id = comment.commitHash;
-    body.path = comment.path;
-    body.line = comment.line;
-    body.side = comment.side;
+    await octokit.rest.pulls.createReviewComment({
+      owner: repository.owner,
+      repo: repository.name,
+      pull_number: pullRequest.number,
+      body: comment.content,
+      in_reply_to: Number(comment.inReplyTo)
+    });
+    return;
   }
 
-  await requestGithubJson(
-    token,
-    `/repos/${repository.owner}/${repository.name}/pulls/${pullRequest.number}/comments`,
-    undefined,
-    {
-      method: 'POST',
-      body
-    }
-  );
+  await octokit.rest.pulls.createReviewComment({
+    owner: repository.owner,
+    repo: repository.name,
+    pull_number: pullRequest.number,
+    body: comment.content,
+    commit_id: comment.commitHash,
+    path: comment.path,
+    line: comment.line,
+    side: comment.side
+  });
 }
 
 async function run(): Promise<void> {
@@ -445,10 +360,10 @@ async function run(): Promise<void> {
       return;
     }
 
-    const fileComments = await fetchCommentsForFiles(context.token, context.repository, context.pullRequest);
+    const fileComments = await fetchCommentsForFiles(context.octokit, context.repository, context.pullRequest);
 
     const affectedFiles = await buildAffectedFilesModel(
-      context.token,
+      context.octokit,
       context.repository,
       context.pullRequest,
       files,
