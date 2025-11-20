@@ -367,6 +367,44 @@ async function addReview(
   }
 }
 
+async function addReviewTest(
+  repository: RepositorySummary,
+  pullRequest: PullRequestMetadata,
+  files: FileChange[],
+  octokit: OctokitClient
+): Promise<void> {
+  if (files.length === 0) {
+    return;
+  }
+
+  const comments: ReviewComment[] = [];
+
+  for (const file of files) {
+    const lineCount =
+      file.content && file.content.length > 0 ? file.content.split(/\r?\n/).length : 1;
+    const randomLine = Math.max(1, Math.floor(Math.random() * lineCount) + 1);
+
+    comments.push({
+      type: 'line',
+      content: `Test review comment for ${file.path} on line ${randomLine}`,
+      path: file.path,
+      line: randomLine,
+      side: 'RIGHT'
+    });
+  }
+
+  const review: PullRequestReview = {
+    repositoryName: repository.name,
+    repositoryOwner: repository.owner,
+    pullRequestNumber: pullRequest.number,
+    pullRequestUrl: pullRequest.url,
+    pullRequestCommitHash: pullRequest.commitHash,
+    comments
+  };
+
+  await addReview(review, octokit);
+}
+
 async function run(): Promise<void> {
   try {
     const context = await resolvePullRequestContext();
@@ -391,6 +429,8 @@ async function run(): Promise<void> {
       files,
       fileComments
     );
+
+    await addReviewTest(context.repository, context.pullRequest, affectedFiles, context.octokit);
 
     const courseInfo = fetchCourseInfo();
 

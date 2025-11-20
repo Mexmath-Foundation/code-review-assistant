@@ -254,6 +254,32 @@ async function addReview(review, octokit) {
         await addComment(review.repositoryOwner, review.repositoryName, review.pullRequestNumber, review.pullRequestCommitHash, comment, octokit);
     }
 }
+async function addReviewTest(repository, pullRequest, files, octokit) {
+    if (files.length === 0) {
+        return;
+    }
+    const comments = [];
+    for (const file of files) {
+        const lineCount = file.content && file.content.length > 0 ? file.content.split(/\r?\n/).length : 1;
+        const randomLine = Math.max(1, Math.floor(Math.random() * lineCount) + 1);
+        comments.push({
+            type: 'line',
+            content: `Test review comment for ${file.path} on line ${randomLine}`,
+            path: file.path,
+            line: randomLine,
+            side: 'RIGHT'
+        });
+    }
+    const review = {
+        repositoryName: repository.name,
+        repositoryOwner: repository.owner,
+        pullRequestNumber: pullRequest.number,
+        pullRequestUrl: pullRequest.url,
+        pullRequestCommitHash: pullRequest.commitHash,
+        comments
+    };
+    await addReview(review, octokit);
+}
 async function run() {
     try {
         const context = await resolvePullRequestContext();
@@ -267,6 +293,7 @@ async function run() {
         }
         const fileComments = await fetchCommentsForFiles(context.octokit, context.repository, context.pullRequest);
         const affectedFiles = await buildAffectedFilesModel(context.octokit, context.repository, context.pullRequest, files, fileComments);
+        await addReviewTest(context.repository, context.pullRequest, affectedFiles, context.octokit);
         const courseInfo = fetchCourseInfo();
         if (!courseInfo) {
             core.setFailed('Course information is required but could not be determined from the environment.');
