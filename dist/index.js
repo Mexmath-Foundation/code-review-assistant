@@ -249,9 +249,9 @@ async function addComment(owner, repo, number, commitHash, comment, octokit) {
             break;
     }
 }
-async function addReview(repository, review, octokit) {
+async function addReview(review, octokit) {
     for (const comment of review.comments) {
-        await addComment(repository.owner, repository.name, review.number, review.commitHash, comment, octokit);
+        await addComment(review.repositoryOwner, review.repositoryName, review.pullRequestNumber, review.pullRequestCommitHash, comment, octokit);
     }
 }
 async function run() {
